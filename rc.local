@@ -1,0 +1,135 @@
+
+#
+#       Configure iptables to inspect bridged traffic
+#
+echo 1 >/proc/sys/net/bridge/bridge-nf-call-iptables
+echo 1 >/proc/sys/net/bridge/bridge-nf-call-ebtables
+
+#
+#       I will also disable IPv6 (until i can be bothered setting up ip6tables)
+#
+echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6
+#
+#       Allow the DMZ hosts and the firewall to connect to these dsts
+#
+ALLOWED_DST="67.227.226.241,tcp:443 67.227.226.241,tcp:80 202.46.179.18,udp:123 203.96.208.82,tcp:53 203.96.208.81,udp:53 202.46.177.18,udp:123 202.46.178.18;
+#
+#       Exclude devices with the following MACs from egress rules
+#
+EXCLUDED_MAC="de:ad:d0:0d:ff:ff f0:01:b0:55:10:01 c0:1d:de:a1:80:08"
+#
+#       Allow management to following endpoints from these srcs 
+#
+MGMT_ENDPOINT="10.0.30.222,tcp:80 10.0.30.222,tcp:22 192.168.122.2,tcp:22";
+MGMT_SRC="192.168.122.1,br0 172.27.0.0/24,tun0";
+#
+#       Expose the following endpoints to the WAN
+#
+DMZ_ENDPOINT="192.168.122.40,tcp:443 192.168.122.40,tcp:22 192.168.122.40,tcp:80 192.168.122.40,icmp:echo-request"
+#
+#       Create the sets
+#
+ipset create dmz_out hash:ip,port;
+ipset create dmz_out_exempt hash:mac;
+ipset create fw_out hash:ip,port; 
+ipset create mgmt_from hash:net,iface;
+ipset create mgmt_endpoint hash:ip,port;
+ipset create dmz_endpoint hash:ip,port;
+#
+#       Populate the sets
+#
+echo $ALLOWED_DST|xargs -n1 ipset add fw_out;
+echo $ALLOWED_DST|xargs -n1 ipset add dmz_out;
+echo $MGMT_SRC|xargs -n1 ipset add mgmt_from;
+echo $MGMT_ENDPOINT|xargs -n1 ipset add mgmt_endpoint;
+echo $DMZ_ENDPOINT|xargs -n1 ipset add dmz_endpoint;
+#
+#
+#
+ipset create dmz_infected hash:mac;
+ipset create et_botcc hash:ip;
+wget -qO- http://iplists.firehol.org/files/et_botcc.ipset|
+grep -v ^#|xargs -n1 ipset add et_botcc; 
+#
+#       Define the interfaces names
+#
+BRIDGE=br0
+OUTSIDE_ETH=eth0
+INSIDE_ETH=eth1
+#
+#       Create the bridge
+#
+ifconfig $OUTSIDE_ETH up 0.0.0.0
+ifconfig $INSIDE_ETH up 0.0.0.0
+brctl addbr $BRIDGE;
+brctl addif $BRIDGE $OUTSIDE_ETH; # OUTSIDE
+brctl addif $BRIDGE $INSIDE_ETH;  # INSIDE
+#
+#       Assign the bridge a static ip (or use DHCP)
+#
+ifconfig br0 up 192.168.122.2 netmask 255.255.255.0 broadcast 192.168.122.255
+#
+#       Now let's run iptables restore :)
+#
+iptables-restore <<EOT
+*filter
+:FORWARD DROP [0:0]
+:INPUT DROP [0:0]
+:OUTPUT ACCEPT [0:0]
+#
+#       Ensure DHCP can pass-through
+#
+-A FORWARD -p udp --dport 67 -m physdev --physdev-in eth1 -j ACCEPT
+-A FORWARD -p udp --dport 68 -m physdev --physdev-in eth0 -j ACCEPT
+
+#
+#       The mac addresses in the below set have unrestricted outbound access
+#
+-A FORWARD --match set --match-set dmz_out_exempt src --match physdev --physdev-in "$INSIDE_ETH" --jump ACCEPT
+#
+#       If a host connects to known C&C servers, it automatically gets added to blocklist
+#
+-A FORWARD --match set --match-set dmz_infected src -j LOG
+-A FORWARD --match set --match-set dmz_infected src -j REJECT --reject-with icmp-host-prohibited
+#
+#       If a host attempts to contact known malware servers, add it to above set
+#
+-A FORWARD --match set --match-set et_botcc dst --match physdev --physdev-in "$INSIDE_ETH" -j LOG
+-A FORWARD --match set --match-set et_botcc dst --match physdev --physdev-in "$INSIDE_ETH" -j SET --add-set dmz_infected src
+#
+#       Allow replies from wan; traffic must not be SYN  
+#
+-A FORWARD --protocol tcp --dport 1025:65535 --match physdev --physdev-in "$OUTSIDE_ETH" ! --tcp-flags FIN,SYN,RST,ACK SYN --jump ACCEPT
+-A FORWARD --protocol udp --dport 1025:65535 --match physdev --physdev-in "$OUTSIDE_ETH" --jump ACCEPT
+#
+#       Allow destination-unreachable and other icmp messages
+#
+-A FORWARD --protocol icmp --icmp-type 3  --jump ACCEPT
+-A FORWARD --protocol icmp --icmp-type 11 --jump ACCEPT
+-A FORWARD --protocol icmp --icmp-type 12 --jump ACCEPT
+#
+#       Allow pings initiated from the inside
+#
+-A FORWARD --protocol icmp --icmp-type 8 --match physdev --physdev-in "$INSIDE_ETH" --jump ACCEPT
+-A FORWARD --protocol icmp --icmp-type 0 --jump ACCEPT
+#
+#       Allow DMZ devices to connect to these locations
+#
+-A FORWARD --match set --match-set dmz_out dst,dst --match physdev --physdev-in "$INSIDE_ETH" --jump ACCEPT
+-A FORWARD --match set --match-set dmz_out src,src --match physdev --physdev-in "$OUTSIDE_ETH" --jump ACCEPT
+#
+#       Expose the following endpoints to the internal network
+#
+-A FORWARD --match set --match-set dmz_endpoint dst,dst --match physdev --physdev-in "$OUTSIDE_ETH" --jump ACCEPT
+-A FORWARD --match set --match-set dmz_endpoint src,src --match physdev --physdev-in "$INSIDE_ETH" --jump ACCEPT
+#
+#       Restrict access to the firewall appliance 
+#
+-A INPUT --match conntrack --ctstate RELATED,ESTABLISHED --jump ACCEPT
+-A INPUT --in-interface lo --jump ACCEPT
+-A INPUT --protocol icmp --icmp-type 8 --jump ACCEPT
+-A INPUT --match conntrack --ctstate NEW -m set --match-set mgmt_from src,src -m set --match-set mgmt_endpoint dst,dst --jump ACCEPT
+-A OUTPUT --out-interface lo --jump ACCEPT
+-A OUTPUT --out-interface "$BRIDGE" --match set --match-set fw_out dst,dst --jump ACCEPT
+COMMIT
+EOT
