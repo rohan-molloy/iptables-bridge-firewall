@@ -4,15 +4,18 @@
 #
 echo 1 >/proc/sys/net/bridge/bridge-nf-call-iptables
 echo 1 >/proc/sys/net/bridge/bridge-nf-call-ebtables
-
 #
 #       I will also disable IPv6 (until i can be bothered setting up ip6tables)
 #
 echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6
 #
+#       Define the MAC address of the trusted DHCP server
+#
+TRUSTED_DHCP_SERVER="52:54:c0:1d:ca:5e"
+#
 #       Allow the DMZ hosts and the firewall to connect to these dsts
 #
-ALLOWED_DST="67.227.226.241,tcp:443 67.227.226.241,tcp:80 202.46.179.18,udp:123 203.96.208.82,tcp:53 203.96.208.81,udp:53 202.46.177.18,udp:123 202.46.178.18;
+ALLOWED_DST="67.227.226.241,tcp:443 67.227.226.241,tcp:80 202.46.179.18,udp:123 203.96.208.82,tcp:53 203.96.208.81,udp:53 202.46.177.18,udp:123 202.46.178.18,udp:123 203.96.208.82,udp:53  203.96.208.81,tcp:53 1.1.1.1,tcp:53 1.1.1.1,udp:53 1.1.1.1,icmp:echo-request";
 #
 #       Exclude devices with the following MACs from egress rules
 #
@@ -31,18 +34,20 @@ DMZ_ENDPOINT="192.168.122.40,tcp:443 192.168.122.40,tcp:22 192.168.122.40,tcp:80
 #
 ipset create dmz_out hash:ip,port;
 ipset create dmz_out_exempt hash:mac;
-ipset create fw_out hash:ip,port; 
 ipset create mgmt_from hash:net,iface;
 ipset create mgmt_endpoint hash:ip,port;
 ipset create dmz_endpoint hash:ip,port;
+ipset create known_dhcp hash:mac;
+ipset create rogue_dhcp hash:mac;
 #
 #       Populate the sets
 #
-echo $ALLOWED_DST|xargs -n1 ipset add fw_out;
 echo $ALLOWED_DST|xargs -n1 ipset add dmz_out;
+echo $EXCLUDED_MAC|xargs -n1 ipset add dmz_out_exempt;
 echo $MGMT_SRC|xargs -n1 ipset add mgmt_from;
 echo $MGMT_ENDPOINT|xargs -n1 ipset add mgmt_endpoint;
 echo $DMZ_ENDPOINT|xargs -n1 ipset add dmz_endpoint;
+echo $TRUSTED_DHCP_SERVER|xargs -n1 ipset add known_dhcp
 #
 #
 #
@@ -68,6 +73,7 @@ brctl addif $BRIDGE $INSIDE_ETH;  # INSIDE
 #       Assign the bridge a static ip (or use DHCP)
 #
 ifconfig br0 up 192.168.122.2 netmask 255.255.255.0 broadcast 192.168.122.255
+echo "nameserver 1.1.1.1" > /etc/resolv.conf
 #
 #       Now let's run iptables restore :)
 #
@@ -77,11 +83,14 @@ iptables-restore <<EOT
 :INPUT DROP [0:0]
 :OUTPUT ACCEPT [0:0]
 #
-#       Ensure DHCP can pass-through
+#       Ensure DHCP from the trusted server can pass-through 
 #
 -A FORWARD -p udp --dport 67 -m physdev --physdev-in eth1 -j ACCEPT
--A FORWARD -p udp --dport 68 -m physdev --physdev-in eth0 -j ACCEPT
-
+-A FORWARD -p udp --dport 68 -m physdev --physdev-in eth0 -m set --match-set known_dhcp src -j ACCEPT
+#
+#       Discover Rogue DHCP servers
+#
+-A FORWARD -p udp --sport 67 -j SET --add-set rogue_dhcp src
 #
 #       The mac addresses in the below set have unrestricted outbound access
 #
@@ -113,12 +122,12 @@ iptables-restore <<EOT
 -A FORWARD --protocol icmp --icmp-type 8 --match physdev --physdev-in "$INSIDE_ETH" --jump ACCEPT
 -A FORWARD --protocol icmp --icmp-type 0 --jump ACCEPT
 #
-#       Allow DMZ devices to connect to these locations
+#       Hosts on the DMZ can connect only to these locations
 #
 -A FORWARD --match set --match-set dmz_out dst,dst --match physdev --physdev-in "$INSIDE_ETH" --jump ACCEPT
 -A FORWARD --match set --match-set dmz_out src,src --match physdev --physdev-in "$OUTSIDE_ETH" --jump ACCEPT
 #
-#       Expose the following endpoints to the internal network
+#       Expose these internal endpoints to the internet
 #
 -A FORWARD --match set --match-set dmz_endpoint dst,dst --match physdev --physdev-in "$OUTSIDE_ETH" --jump ACCEPT
 -A FORWARD --match set --match-set dmz_endpoint src,src --match physdev --physdev-in "$INSIDE_ETH" --jump ACCEPT
@@ -130,6 +139,6 @@ iptables-restore <<EOT
 -A INPUT --protocol icmp --icmp-type 8 --jump ACCEPT
 -A INPUT --match conntrack --ctstate NEW -m set --match-set mgmt_from src,src -m set --match-set mgmt_endpoint dst,dst --jump ACCEPT
 -A OUTPUT --out-interface lo --jump ACCEPT
--A OUTPUT --out-interface "$BRIDGE" --match set --match-set fw_out dst,dst --jump ACCEPT
 COMMIT
 EOT
+
