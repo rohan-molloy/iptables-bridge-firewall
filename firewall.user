@@ -1,0 +1,37 @@
+# Disable connection tracking
+iptables -t raw -I PREROUTING -i br0 -j CT --notrack
+iptables -t raw -I OUTPUT -o br0 -j CT --notrack
+
+# Forward all ICMP packets (except ping)
+iptables -A FORWARD -i br0 -p icmp ! --icmp-type echo-request -j ACCEPT
+
+# Create the chains
+iptables -N br0_external
+iptables -N br0_internal
+iptables -N br0_local
+iptables -I INPUT -i br0 -j br0_local
+iptables -I FORWARD -i br0 -m physdev --physdev-in eth0 -j br0_external
+iptables -I FORWARD -i br0 -m physdev --physdev-in eth1 -j br0_internal
+
+# Forward DHCP traffic to trusted server
+iptables -A br0_internal -p udp --dport 67 -j ACCEPT
+iptables -A br0_external -p udp --dport 68 -m set --match-set known_dhcp src -j ACCEPT
+
+# Define egress rules in an ipset
+iptables -A br0_internal --match set --match-set dmz_out src,dst,dst -j ACCEPT
+iptables -A br0_external --match set --match-set dmz_out dst,src,src -j ACCEPT
+
+# Define ingress rules in an ipset
+iptables -A br0_external --match set --match-set dmz_in src,dst,dst -j ACCEPT
+iptables -A br0_internal --match set --match-set dmz_in dst,src,src -j ACCEPT
+
+# Add the default drop statement
+iptables -A br0_internal --jump DROP
+iptables -A br0_external --jump DROP
+
+# Restrict access to the firewall appliance 
+iptables -A br0_local --protocol udp -m set --match-set known_dhcp src --sport 67 -j ACCEPT
+iptables -A br0_local --protocol tcp --dport 32768:65535 ! --tcp-flags FIN,SYN,RST,ACK SYN -j ACCEPT
+iptables -A br0_local --protocol udp --dport 32768:65535 -j ACCEPT
+iptables -A br0_local -m set --match-set mgmt dst,dst,src -j ACCEPT
+iptables -A br0_local -j DROP
