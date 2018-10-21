@@ -1,0 +1,24 @@
+create dmz_in hash:net,port,net family inet hashsize 1024 maxelem 65536
+add dmz_in 192.168.0.0/16,icmp:echo-request,192.168.122.0/24
+add dmz_in 0.0.0.0,icmp:echo-request,192.168.122.53
+add dmz_in 0.0.0.0,udp:53,192.168.122.53
+add dmz_in 0.0.0.0,tcp:53,192.168.122.53
+add dmz_in 0.0.0.0,tcp:22,192.168.122.215
+add dmz_in 128.0.0.1,icmp:echo-request,192.168.122.0/24
+
+create dmz_out hash:net,port,net family inet hashsize 1024 maxelem 65536
+add dmz_out 192.168.122.0/24,udp:53,1.1.1.1
+add dmz_out 192.168.122.0/24,tcp:53,1.1.1.1
+add dmz_out 192.168.122.0/24,udp:53,1.0.0.1
+add dmz_out 192.168.122.0/24,tcp:53,1.0.0.1
+add dmz_out 192.168.122.215,tcp:80,0.0.0.0
+add dmz_out 192.168.122.215,tcp:443,0.0.0.0
+add dmz_out 192.168.122.215,icmp:echo-request,0.0.0.0
+
+create mgmt hash:ip,port,net family inet hashsize 1024 maxelem 65536
+add mgmt 192.168.122.2,icmp:echo-request,192.168.0.0/16
+add mgmt 192.168.122.2,tcp:22,192.168.0.0/16
+
+create known_dhcp hash:mac hashsize 1024 maxelem 65536
+add known_dhcp 52:54:C0:1D:CA:5E
+
