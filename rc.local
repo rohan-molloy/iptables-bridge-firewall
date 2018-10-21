@@ -133,7 +133,7 @@ iptables-restore <<EOT
 #
 #       Restrict access to the firewall appliance 
 #
--A INPUT --in-interface br0 --sport 67 -m set ! --match-set known_dhcp -j DROP
+-A INPUT --in-interface br0 --sport 67 -m set ! --match-set known_dhcp src -j DROP
 -A INPUT --in-interface lo --jump ACCEPT
 -A INPUT --match conntrack --ctstate RELATED,ESTABLISHED --jump ACCEPT
 -A INPUT --protocol icmp --icmp-type 8 --jump ACCEPT
