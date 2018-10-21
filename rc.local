@@ -70,10 +70,9 @@ brctl addbr $BRIDGE;
 brctl addif $BRIDGE $OUTSIDE_ETH; # OUTSIDE
 brctl addif $BRIDGE $INSIDE_ETH;  # INSIDE
 #
-#       Assign the bridge a static ip (or use DHCP)
+#       Assign the bridge an IP over DHCP
 #
-ifconfig br0 up 192.168.122.2 netmask 255.255.255.0 broadcast 192.168.122.255
-echo "nameserver 1.1.1.1" > /etc/resolv.conf
+udhcpc --now --interface br0
 #
 #       Now let's run iptables restore :)
 #
@@ -134,8 +133,9 @@ iptables-restore <<EOT
 #
 #       Restrict access to the firewall appliance 
 #
--A INPUT --match conntrack --ctstate RELATED,ESTABLISHED --jump ACCEPT
+-A INPUT --in-interface br0 --sport 67 -m set ! --match-set known_dhcp -j DROP
 -A INPUT --in-interface lo --jump ACCEPT
+-A INPUT --match conntrack --ctstate RELATED,ESTABLISHED --jump ACCEPT
 -A INPUT --protocol icmp --icmp-type 8 --jump ACCEPT
 -A INPUT --match conntrack --ctstate NEW -m set --match-set mgmt_from src,src -m set --match-set mgmt_endpoint dst,dst --jump ACCEPT
 -A OUTPUT --out-interface lo --jump ACCEPT
